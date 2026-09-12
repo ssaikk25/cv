@@ -111,14 +111,16 @@ class SegDataset(Dataset):
         mask = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
         if mask is None:
             raise FileNotFoundError(f"Не удалось прочитать маску: {path}")
-        return (mask > 128).astype(np.float32)
+        # Возвращаем uint8 без бинаризации: порог применим после уменьшения,
+        # чтобы не создавать большие float32-массивы в полном разрешении.
+        return mask
 
     def __getitem__(self, idx):
         sample = self.samples[idx]
         img = self._load_rgb(self.data_dir / sample["img"])
 
         if sample["mask"] is None:
-            mask = np.zeros(img.shape[:2], dtype=np.float32)
+            mask = np.zeros(img.shape[:2], dtype=np.uint8)
         else:
             mask = self._load_mask(self.data_dir / sample["mask"])
 
@@ -133,6 +135,7 @@ class SegDataset(Dataset):
     def _preprocess(self, img, mask):
         img = cv2.resize(img, (self.img_size, self.img_size), interpolation=cv2.INTER_LINEAR)
         mask = cv2.resize(mask, (self.img_size, self.img_size), interpolation=cv2.INTER_NEAREST)
+        mask = (mask > 128).astype(np.float32)
 
         if self.augment:
             # Горизонтальный флип — безопасная геометрическая аугментация

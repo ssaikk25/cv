@@ -37,7 +37,7 @@ def parse_args():
     parser.add_argument("--val-neg", type=int, default=1000,
                         help="Число чистых оригиналов в валидации для оценки FPR")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--num-workers", type=int, default=3)
+    parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--limit", type=int, default=0,
                         help="Ограничение числа строк для быстрой проверки пайплайна")
     parser.add_argument("--checkpoint-dir", type=str, default=str(config.CHECKPOINT_DIR))
@@ -233,7 +233,7 @@ def main():
 
     # После обучения подбираем порог бинаризации по метрике AIC. Порог считаем
     # на лучшем чекпоинте, чтобы он точно соответствовал модели для инференса.
-    best_state = torch.load(best_path, map_location=device)
+    best_state = torch.load(best_path, map_location=device, weights_only=True)
     model.load_state_dict(best_state["model"])
     hist_all, hist_pos, n_pos, total, is_neg = collect_predictions(model, val_loader, device)
     best_thr, best_aic, best_dice, best_fpr = select_threshold(

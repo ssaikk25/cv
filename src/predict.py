@@ -30,7 +30,7 @@ def parse_args():
     parser.add_argument("--encoder", type=str, default="resnet34")
     parser.add_argument("--img-size", type=int, default=256)
     parser.add_argument("--batch-size", type=int, default=16)
-    parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument("--threshold-json", type=str, default=None,
                         help="Файл с подобранным порогом; перекрывает --threshold")
@@ -38,6 +38,9 @@ def parse_args():
     parser.add_argument("--submission-csv", type=str,
                         default=str(config.OUTPUTS_DIR / "submission.csv"))
     parser.add_argument("--zip", type=str, default=str(config.OUTPUTS_DIR / "submission.zip"))
+    parser.add_argument("--device", type=str, default="auto", choices=["auto", "cuda", "cpu"])
+    parser.add_argument("--limit", type=int, default=0,
+                        help="Ограничить число изображений для быстрой проверки")
     return parser.parse_args()
 
 
@@ -76,7 +79,10 @@ def write_submission_zip(submission_csv: Path, pred_dir: Path, zip_path: Path):
 
 def main():
     args = parse_args()
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if args.device == "auto":
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    else:
+        device = args.device
 
     threshold = args.threshold
     if args.threshold_json:
@@ -85,10 +91,12 @@ def main():
     print(f"порог бинаризации: {threshold:.3f}")
 
     paths = read_test_csv(args.test_csv)
+    if args.limit:
+        paths = paths[:args.limit]
     print(f"тестовых изображений: {len(paths)}")
 
     model = ManipulationUnet(args.encoder)
-    state = torch.load(args.checkpoint, map_location=device)
+    state = torch.load(args.checkpoint, map_location=device, weights_only=True)
     model.load_state_dict(state["model"])
     model.to(device)
     model.eval()
