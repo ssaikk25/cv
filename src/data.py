@@ -140,11 +140,13 @@ class SegDataset(Dataset):
             if random.random() < 0.5:
                 img = np.ascontiguousarray(img[:, ::-1])
                 mask = np.ascontiguousarray(mask[:, ::-1])
-            # Повороты на 90 градусов.
+            # Повороты на 90 градусов. np.rot90 возвращает view с отрицательными
+            # шагами, который torch.from_numpy не принимает, поэтому копируем в
+            # непрерывный массив через ascontiguousarray.
             if random.random() < 0.5:
                 k = random.randint(0, 3)
-                img = np.rot90(img, k)
-                mask = np.rot90(mask, k)
+                img = np.ascontiguousarray(np.rot90(img, k))
+                mask = np.ascontiguousarray(np.rot90(mask, k))
 
         img = img.astype(np.float32) / 255.0
         img = img.transpose(2, 0, 1)
