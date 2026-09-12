@@ -1,0 +1,19 @@
+# Python 3.11, CUDA 12.1. Порядок установки описан в README, секция "Окружение".
+# torch и torchvision ставятся отдельно с индекса cu121, остальное с PyPI.
+
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch==2.5.1+cu121
+torchvision==0.20.1+cu121
+
+segmentation-models-pytorch==0.4.0
+opencv-python-headless>=4.8.0
+Pillow>=10.0.0
+numpy==1.26.4
+tqdm>=4.66.0
+matplotlib>=3.7
+pandas>=2.0
+
+# для запуска ноутбуков
+ipykernel>=6.0
+nbformat>=5.0
+nbclient>=0.9
