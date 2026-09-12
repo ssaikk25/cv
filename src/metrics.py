@@ -34,24 +34,20 @@ def aic_score(dice_pos: float, fpr_neg: float) -> float:
     return float(2.0 * dice_pos * one_minus_fpr / (dice_pos + one_minus_fpr + 1e-12))
 
 
-def select_threshold(probs_pos, masks_pos, probs_neg, thresholds):
-    """Подбирает порог бинаризации, максимизирующий AIC.
+def dice_from_hist(hist_all, hist_pos, n_pos, threshold):
+    """Dice одного изображения по гистограммам вероятностей.
 
-    probs_pos и masks_pos — списки массивов вероятностей и соответствующих
-    истинных масок для изменённых изображений. probs_neg — список массивов
-    вероятностей для чистых изображений. Все массивы numpy с одинаковым
-    разрешением. Возвращает (порог, aic, dice_pos, fpr_neg).
+    hist_all — гистограмма (256 бинов) вероятностей по всем пикселям,
+    hist_pos — по пикселям переднего плана маски, n_pos — их количество.
+    Такой способ не хранит в памяти полную карту вероятностей.
     """
-    best = (0.5, -1.0, 0.0, 1.0)
-    for threshold in thresholds:
-        dices = [dice_score(p >= threshold, m) for p, m in zip(probs_pos, masks_pos)]
-        dice_pos = float(np.mean(dices)) if dices else 0.0
+    tbin = int(threshold * 255)
+    pred_count = float(np.asarray(hist_all[tbin:]).sum())
+    inter = float(np.asarray(hist_pos[tbin:]).sum())
+    return 2.0 * inter / (pred_count + n_pos + 1e-6)
 
-        areas = [(p >= threshold).sum() / p.size for p in probs_neg]
-        fpr = fpr_negative(np.asarray(areas))
-        score = aic_score(dice_pos, fpr)
 
-        if score > best[1]:
-            best = (threshold, score, dice_pos, fpr)
-
-    return best
+def area_from_hist(hist_all, total_pixels, threshold):
+    """Доля площади предсказанной маски при заданном пороге."""
+    tbin = int(threshold * 255)
+    return float(np.asarray(hist_all[tbin:]).sum()) / total_pixels

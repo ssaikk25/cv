@@ -16,7 +16,7 @@ from tqdm import tqdm
 
 from . import config
 from .data import SegDataset, load_mask_stats, read_train_csv, split_rows
-from .metrics import aic_score, dice_score, fpr_negative, select_threshold
+from .metrics import aic_score, area_from_hist, dice_from_hist, fpr_negative
 from .model import ManipulationUnet, check_flops
 
 
@@ -35,9 +35,9 @@ def parse_args():
     parser.add_argument("--neg-ratio", type=float, default=0.1,
                         help="Доля чистых примеров относительно обучающих позитивов")
     parser.add_argument("--val-neg", type=int, default=1000,
-                        help="Число чистых изображений в валидации для оценки FPR")
+                        help="Число чистых оригиналов в валидации для оценки FPR")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--num-workers", type=int, default=3)
     parser.add_argument("--limit", type=int, default=0,
                         help="Ограничение числа строк для быстрой проверки пайплайна")
     parser.add_argument("--checkpoint-dir", type=str, default=str(config.CHECKPOINT_DIR))
@@ -74,34 +74,66 @@ def train_epoch(model, loader, criterion, optimizer, scaler, device):
 
 @torch.no_grad()
 def collect_predictions(model, loader, device):
-    """Прогоняет валидацию и возвращает вероятности, маски и флаг чистоты."""
+    """Прогоняет валидацию и собирает компактные гистограммы вероятностей.
+
+    Вместо полных карт храним по две гистограммы (256 бинов) на изображение:
+    распределение вероятностей по всем пикселям и по пикселям переднего плана.
+    Этого достаточно, чтобы точно посчитать Dice и площадь маски при любом
+    пороге, не удерживая в памяти сотни мегабайт карт вероятностей.
+    """
     model.eval()
-    probs, masks, is_neg = [], [], []
+    hist_all, hist_pos, n_pos, total, is_neg = [], [], [], [], []
     for batch in tqdm(loader, desc="eval", leave=False):
         images = batch["image"].to(device)
         logits = model(images)
-        p = torch.sigmoid(logits).cpu().numpy()[:, 0]
-        m = batch["mask"].cpu().numpy()[:, 0]
-        n = batch["is_neg"].cpu().numpy().astype(bool)
+        probs = torch.sigmoid(logits).cpu().numpy()[:, 0]
+        masks = batch["mask"].cpu().numpy()[:, 0]
+        flags = batch["is_neg"].cpu().numpy().astype(bool)
 
-        probs.extend(p[i] for i in range(len(p)))
-        masks.extend(m[i] for i in range(len(m)))
-        is_neg.extend(bool(n[i]) for i in range(len(n)))
-    return probs, masks, is_neg
+        # Квантуем вероятности в 256 бинов, чтобы гистограммы были компактными.
+        quantized = np.clip((probs * 255.0), 0, 255).astype(np.uint8)
+
+        for i in range(probs.shape[0]):
+            flat = quantized[i].ravel()
+            fg = (masks[i] > 0.5).ravel()
+            hist_all.append(np.bincount(flat, minlength=256).astype(np.float64))
+            hist_pos.append(np.bincount(flat[fg], minlength=256).astype(np.float64))
+            n_pos.append(float(fg.sum()))
+            total.append(float(fg.size))
+            is_neg.append(bool(flags[i]))
+    return hist_all, hist_pos, n_pos, total, is_neg
 
 
-def evaluate(probs, masks, is_neg, threshold):
-    """Считает Dice_pos, FPR_neg и AIC при заданном пороге."""
-    pos_probs = [p for p, n in zip(probs, is_neg) if not n]
-    pos_masks = [m for m, n in zip(masks, is_neg) if not n]
-    neg_probs = [p for p, n in zip(probs, is_neg) if n]
+def evaluate(hist_all, hist_pos, n_pos, total, is_neg, threshold):
+    """Считает Dice_pos, FPR_neg и AIC при заданном пороге по гистограммам."""
+    pos_idx = [i for i, n in enumerate(is_neg) if not n]
+    neg_idx = [i for i, n in enumerate(is_neg) if n]
 
-    dices = [dice_score(p >= threshold, m) for p, m in zip(pos_probs, pos_masks)]
+    dices = [dice_from_hist(hist_all[i], hist_pos[i], n_pos[i], threshold) for i in pos_idx]
     dice_pos = float(np.mean(dices)) if dices else 0.0
 
-    areas = [(p >= threshold).sum() / p.size for p in neg_probs]
-    fpr = fpr_negative(np.asarray(areas)) if neg_probs else 0.0
+    areas = [area_from_hist(hist_all[i], total[i], threshold) for i in neg_idx]
+    fpr = fpr_negative(np.asarray(areas)) if neg_idx else 0.0
     return dice_pos, fpr, aic_score(dice_pos, fpr)
+
+
+def select_threshold(hist_all, hist_pos, n_pos, total, is_neg, thresholds):
+    """Подбирает порог бинаризации, максимизирующий AIC на валидации."""
+    pos_idx = [i for i, n in enumerate(is_neg) if not n]
+    neg_idx = [i for i, n in enumerate(is_neg) if n]
+
+    best = (0.5, -1.0, 0.0, 1.0)
+    for threshold in thresholds:
+        dices = [dice_from_hist(hist_all[i], hist_pos[i], n_pos[i], threshold) for i in pos_idx]
+        dice_pos = float(np.mean(dices)) if dices else 0.0
+
+        areas = [area_from_hist(hist_all[i], total[i], threshold) for i in neg_idx]
+        fpr = fpr_negative(np.asarray(areas)) if neg_idx else 0.0
+        score = aic_score(dice_pos, fpr)
+
+        if score > best[1]:
+            best = (threshold, score, dice_pos, fpr)
+    return best
 
 
 def main():
@@ -141,13 +173,15 @@ def main():
     train_ds = SegDataset(train_samples, args.data_dir, args.img_size, train=True)
     val_ds = SegDataset(val_samples, args.data_dir, args.img_size, train=False)
 
+    # pin_memory выключен: на машинах с небольшим объёмом ОЗУ pinned-буферы
+    # CUDA заметно увеличивают commit-заряд и могут приводить к нехватке памяти.
     train_loader = DataLoader(
         train_ds, batch_size=args.batch_size, shuffle=True,
-        num_workers=args.num_workers, pin_memory=True, drop_last=True,
+        num_workers=args.num_workers, pin_memory=False, drop_last=True,
     )
     val_loader = DataLoader(
         val_ds, batch_size=args.batch_size, shuffle=False,
-        num_workers=args.num_workers, pin_memory=True,
+        num_workers=args.num_workers, pin_memory=False,
     )
 
     model = ManipulationUnet(args.encoder).to(device)
@@ -174,8 +208,8 @@ def main():
         tr_loss = train_epoch(model, train_loader, criterion, optimizer, scaler, device)
         scheduler.step()
 
-        probs, masks, is_neg = collect_predictions(model, val_loader, device)
-        dice_pos, fpr_neg, aic = evaluate(probs, masks, is_neg, threshold=0.5)
+        hist_all, hist_pos, n_pos, total, is_neg = collect_predictions(model, val_loader, device)
+        dice_pos, fpr_neg, aic = evaluate(hist_all, hist_pos, n_pos, total, is_neg, threshold=0.5)
 
         lr = scheduler.get_last_lr()[0]
         print(f"epoch {epoch}/{args.epochs} | loss={tr_loss:.4f} | "
@@ -198,14 +232,9 @@ def main():
             print(f"  сохранён лучший чекпоинт -> {best_path.name} (aic={aic:.4f})")
 
     # После обучения подбираем порог бинаризации по метрике AIC на валидации.
-    probs, masks, is_neg = collect_predictions(model, val_loader, device)
-    pos_probs = [p for p, n in zip(probs, is_neg) if not n]
-    pos_masks = [m for m, n in zip(masks, is_neg) if not n]
-    neg_probs = [p for p, n in zip(probs, is_neg) if n]
-
-    thresholds = np.arange(0.10, 0.96, 0.05)
+    hist_all, hist_pos, n_pos, total, is_neg = collect_predictions(model, val_loader, device)
     best_thr, best_aic, best_dice, best_fpr = select_threshold(
-        pos_probs, pos_masks, neg_probs, thresholds
+        hist_all, hist_pos, n_pos, total, is_neg, np.arange(0.10, 0.96, 0.05)
     )
 
     threshold_info = {
