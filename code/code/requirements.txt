@@ -1,0 +1,9 @@
+# GPU (CUDA 12.1). Для CPU замените index-url на https://download.pytorch.org/whl/cpu
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch>=2.1
+torchvision>=0.16
+segmentation-models-pytorch>=0.4.0
+opencv-python-headless>=4.8.0
+Pillow>=10.0.0
+numpy>=1.24.0,<3
+tqdm>=4.66.0
