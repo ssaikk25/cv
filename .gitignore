@@ -14,10 +14,11 @@ test_stage1_img/
 /nanobanana/
 /pico_nanobanana/
 
-# материалы соревнования, выданные организаторами (если не нужны в репо)
-/submission.csv
-/predictions/
-/submissions/*/predictions/
+# посылки и предсказания — генерируются скриптом (в т.ч. внутри code/)
+submission.csv
+predictions/
+outputs/
+submissions/
 
 # ============================================================
 #  Артефакты обучения
