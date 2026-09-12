@@ -231,7 +231,10 @@ def main():
             torch.save(state, best_path)
             print(f"  сохранён лучший чекпоинт -> {best_path.name} (aic={aic:.4f})")
 
-    # После обучения подбираем порог бинаризации по метрике AIC на валидации.
+    # После обучения подбираем порог бинаризации по метрике AIC. Порог считаем
+    # на лучшем чекпоинте, чтобы он точно соответствовал модели для инференса.
+    best_state = torch.load(best_path, map_location=device)
+    model.load_state_dict(best_state["model"])
     hist_all, hist_pos, n_pos, total, is_neg = collect_predictions(model, val_loader, device)
     best_thr, best_aic, best_dice, best_fpr = select_threshold(
         hist_all, hist_pos, n_pos, total, is_neg, np.arange(0.10, 0.96, 0.05)
