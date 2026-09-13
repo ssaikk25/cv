@@ -41,6 +41,8 @@ def parse_args():
     parser.add_argument("--device", type=str, default="auto", choices=["auto", "cuda", "cpu"])
     parser.add_argument("--limit", type=int, default=0,
                         help="Ограничить число изображений для быстрой проверки")
+    parser.add_argument("--tta", action="store_true",
+                        help="Test-time augmentation: усреднять предсказание по флипу")
     return parser.parse_args()
 
 
@@ -115,7 +117,13 @@ def main():
     for images, heights, widths, rels in tqdm(loader, desc="predict"):
         images = images.to(device)
         with torch.no_grad():
-            logits = model(images)
+            if args.tta:
+                # Горизонтальный флип + усреднение — дешёвый способ повысить
+                # устойчивость предсказания без переобучения.
+                flipped = torch.flip(images, dims=[3])
+                logits = 0.5 * (model(images) + torch.flip(model(flipped), dims=[3]))
+            else:
+                logits = model(images)
         probs = torch.sigmoid(logits).cpu().numpy()[:, 0]
 
         for i in range(probs.shape[0]):

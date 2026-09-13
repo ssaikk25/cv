@@ -34,6 +34,8 @@ def parse_args():
     parser.add_argument("--val-ratio", type=float, default=0.05)
     parser.add_argument("--neg-ratio", type=float, default=0.1,
                         help="Доля чистых примеров относительно обучающих позитивов")
+    parser.add_argument("--dice-w", type=float, default=1.0,
+                        help="Вес Dice-составляющей в loss (0 = только BCE)")
     parser.add_argument("--val-neg", type=int, default=1000,
                         help="Число чистых оригиналов в валидации для оценки FPR")
     parser.add_argument("--seed", type=int, default=42)
@@ -53,7 +55,19 @@ def set_seed(seed: int):
         torch.cuda.manual_seed_all(seed)
 
 
-def train_epoch(model, loader, criterion, optimizer, scaler, device):
+def dice_loss(logits: torch.Tensor, targets: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    """Soft Dice loss: 1 - Dice. Напрямую оптимизирует метрику сегментации.
+
+    BCE штрафует каждый пиксель независимо, а Dice — пересечение областей целиком,
+    поэтому их сумма обычно даёт более чёткие маски, чем один BCE.
+    """
+    probs = torch.sigmoid(logits)
+    num = 2.0 * (probs * targets).sum() + eps
+    den = probs.sum() + targets.sum() + eps
+    return 1.0 - num / den
+
+
+def train_epoch(model, loader, criterion, optimizer, scaler, device, dice_w=0.0):
     model.train()
     total = 0.0
     for batch in tqdm(loader, desc="train", leave=False):
@@ -64,6 +78,8 @@ def train_epoch(model, loader, criterion, optimizer, scaler, device):
         with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=device == "cuda"):
             logits = model(images)
             loss = criterion(logits, masks)
+            if dice_w > 0.0:
+                loss = loss + dice_w * dice_loss(logits, masks)
 
         scaler.scale(loss).backward()
         scaler.step(optimizer)
@@ -205,7 +221,7 @@ def main():
 
     best_aic = -1.0
     for epoch in range(1, args.epochs + 1):
-        tr_loss = train_epoch(model, train_loader, criterion, optimizer, scaler, device)
+        tr_loss = train_epoch(model, train_loader, criterion, optimizer, scaler, device, args.dice_w)
         scheduler.step()
 
         hist_all, hist_pos, n_pos, total, is_neg = collect_predictions(model, val_loader, device)
