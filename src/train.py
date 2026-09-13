@@ -44,6 +44,8 @@ def parse_args():
                         help="Ограничение числа строк для быстрой проверки пайплайна")
     parser.add_argument("--checkpoint-dir", type=str, default=str(config.CHECKPOINT_DIR))
     parser.add_argument("--name", type=str, default="manip_unet_resnet34")
+    parser.add_argument("--resume", action="store_true",
+                        help="Возобновить обучение из {name}_last.pth, если он есть")
     return parser.parse_args()
 
 
@@ -213,6 +215,14 @@ def main():
     last_path = ckpt_dir / f"{args.name}_last.pth"
     best_path = ckpt_dir / f"{args.name}_best.pth"
 
+    # Возобновление: если просили и есть чекпоинт, стартуем с его эпохи.
+    start_epoch = 0
+    if args.resume and last_path.exists():
+        state = torch.load(last_path, map_location=device, weights_only=True)
+        model.load_state_dict(state["model"])
+        start_epoch = int(state.get("epoch", 0))
+        print(f"возобновление с эпохи {start_epoch} ({last_path.name})")
+
     # Фиксируем параметры запуска для воспроизводимости.
     run_config = vars(args).copy()
     run_config["device"] = device
@@ -220,7 +230,7 @@ def main():
         json.dump(run_config, f, indent=2, ensure_ascii=False)
 
     best_aic = -1.0
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(start_epoch + 1, args.epochs + 1):
         tr_loss = train_epoch(model, train_loader, criterion, optimizer, scaler, device, args.dice_w)
         scheduler.step()
 
